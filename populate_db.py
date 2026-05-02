@@ -6,55 +6,21 @@ import httpx
 from sqlalchemy import delete, select, update
 
 import models
+from config import settings
 from database import AsyncSessionLocal, engine
-from image_utils import PROFILE_PICS_DIR
+from image_utils import _get_s3_client
 from main import app
 
 POPULATE_IMAGES_DIR = Path("populate_images")
 
 USERS = [
-    {
-        "username": "RajneeshKumar",
-        "email": "rajneesh.kumar@gmail.com",
-        "password": "Test@123",
-        "image": "user_1.png",
-    },
-    {
-        "username": "NitishVerma",
-        "email": "nitish.verma@gmail.com",
-        "password": "Test@123",
-        "image": "user_2.png",
-    },
-    {
-        "username": "PriyaSharma",
-        "email": "priya.sharma@gmail.com",
-        "password": "Test@123",
-        "image": "user_3.jpg",
-    },
-    {
-        "username": "AmitSingh",
-        "email": "amit.singh@gmail.com",
-        "password": "Test@123",
-        "image": "user_4.jpg",
-    },
-    {
-        "username": "SnehaPatel",
-        "email": "sneha.patel@gmail.com",
-        "password": "Test@123",
-        "image": "user_5.png",
-    },
-    {
-        "username": "VikashGupta",
-        "email": "vikash.gupta@gmail.com",
-        "password": "Test@123",
-        "image": "user_6.jpg",
-    },
-    {
-        "username": "RohitVerma",
-        "email": "rohit.verma@gmail.com",
-        "password": "Test@123",
-        "image": "user_7.jpg",
-    },
+    {"username": "RajneeshKumar", "email": "rajneesh.kumar@gmail.com", "password": "Test@123", "image": "user_1.png"},
+    {"username": "NitishVerma", "email": "nitish.verma@gmail.com", "password": "Test@123", "image": "user_2.png"},
+    {"username": "PriyaSharma", "email": "priya.sharma@gmail.com", "password": "Test@123", "image": "user_3.jpg"},
+    {"username": "AmitSingh", "email": "amit.singh@gmail.com", "password": "Test@123", "image": "user_4.jpg"},
+    {"username": "SnehaPatel", "email": "sneha.patel@gmail.com", "password": "Test@123", "image": "user_5.png"},
+    {"username": "VikashGupta", "email": "vikash.gupta@gmail.com", "password": "Test@123", "image": "user_6.jpg"},
+    {"username": "RohitVerma", "email": "rohit.verma@gmail.com", "password": "Test@123", "image": "user_7.jpg"},
 ]
 
 POST_TITLES = [
@@ -95,10 +61,10 @@ POST_CONTENTS = [
 
 POSTS = [
     {
-        "title": f"{POST_TITLES[i % len(POST_TITLES)]} #{i+1}",
+        "title": POST_TITLES[i % len(POST_TITLES)],
         "content": POST_CONTENTS[i % len(POST_CONTENTS)],
     }
-    for i in range(55)
+    for i in range(100)
 ]
 
 POST_44 = {
@@ -110,16 +76,24 @@ POST_44 = {
     ),
 }
 
-async def clear_existing_data() -> None:
-    # Delete profile pictures from local storage
-    if PROFILE_PICS_DIR.exists():
-        for file in PROFILE_PICS_DIR.iterdir():
-            if file.is_file() and file.name != ".gitkeep":
-                file.unlink()
-        print(f"Deleted profile pictures from {PROFILE_PICS_DIR}")
 
-    # Clear database tables (order respects foreign keys)
+async def clear_existing_data() -> None:
     async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.User.image_file).where(models.User.image_file.is_not(None)),
+        )
+        filenames = result.scalars().all()
+
+    if filenames:
+        s3 = _get_s3_client()
+        s3.delete_objects(
+            Bucket=settings.s3_bucket_name,
+            Delete={"Objects": [{"Key": f"profile_pics/{f}"} for f in filenames]},
+        )
+        print(f"Deleted {len(filenames)} images from S3")
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(models.PasswordResetToken))
         await db.execute(delete(models.Post))
         await db.execute(delete(models.User))
         await db.commit()
@@ -136,14 +110,12 @@ async def update_post_dates() -> None:
         if not posts:
             return
 
-        # First post (POST_44) is the oldest - ~90 days ago
         await db.execute(
             update(models.Post)
             .where(models.Post.id == posts[0].id)
             .values(date_posted=now - timedelta(days=90)),
         )
 
-        # Remaining posts: each ~1.5 days newer than previous
         for i, post in enumerate(posts[1:], start=1):
             days_ago = (len(posts) - i) * 1.5
             hours_offset = (i * 7) % 24
@@ -161,11 +133,7 @@ async def update_post_dates() -> None:
 async def populate() -> None:
     transport = httpx.ASGITransport(app=app)
 
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://localhost",
-    ) as client:
-        # Clear existing data (local images first, then database)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         await clear_existing_data()
 
         users: list[dict] = []
@@ -202,7 +170,6 @@ async def populate() -> None:
                         if image_name.lower().endswith((".jpg", ".jpeg"))
                         else "image/png"
                     )
-
                     response = await client.patch(
                         f"/api/users/{user['id']}/picture",
                         files={
@@ -217,13 +184,10 @@ async def populate() -> None:
                     response.raise_for_status()
                     print(f"    Uploaded: {image_name}")
 
-            users.append(
-                {"id": user["id"], "username": user["username"], "token": token},
-            )
+            users.append({"id": user["id"], "username": user["username"], "token": token})
 
         print(f"\nCreating {len(POSTS) + 1} posts...")
 
-        # First create POST_44 (will become oldest after date update)
         response = await client.post(
             "/api/posts",
             json={"title": POST_44["title"], "content": POST_44["content"]},
@@ -232,24 +196,14 @@ async def populate() -> None:
         response.raise_for_status()
         print(f"  Created: '{POST_44['title']}'")
 
-        # Create remaining posts in reverse (last in list = oldest, first = newest)
         for i, post_data in enumerate(reversed(POSTS)):
             user = users[i % len(users)]
             response = await client.post(
                 "/api/posts",
-                json={
-                    "title": post_data["title"],
-                    "content": post_data["content"],
-                },
+                json={"title": post_data["title"], "content": post_data["content"]},
                 headers={"Authorization": f"Bearer {user['token']}"},
             )
             response.raise_for_status()
-            title = post_data["title"]
-            print(
-                f"  Created: '{title[:50]}...'"
-                if len(title) > 50
-                else f"  Created: '{title}'",
-            )
 
         print("\nUpdating post dates...")
         await update_post_dates()
@@ -259,7 +213,7 @@ async def populate() -> None:
     print("\nDone!")
     print(f"  {len(USERS)} users")
     print(f"  {len(POSTS) + 1} posts")
-    print("  Profile pictures saved locally")
+    print("  Profile pictures uploaded to S3")
 
 
 if __name__ == "__main__":
