@@ -98,7 +98,7 @@ POSTS = [
         "title": f"{POST_TITLES[i % len(POST_TITLES)]} #{i+1}",
         "content": POST_CONTENTS[i % len(POST_CONTENTS)],
     }
-    for i in range(100)
+    for i in range(55)
 ]
 
 POST_44 = {
