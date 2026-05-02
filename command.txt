@@ -1,1 +1,17 @@
+# Start FastAPI development server on port 8001
 uv run fastapi dev .\main.py --port 8001
+
+# Initialize Alembic with async template (run once only)
+uv run alembic init -t async alembic
+
+# Create a new migration by comparing models with DB schema
+uv run alembic revision --autogenerate -m "Initial Schema"
+
+# Apply latest migrations to database
+uv run alembic upgrade head
+
+# Show current migration version applied in DB
+uv run alembic current
+
+# Show complete migration history
+uv run alembic history

@@ -8,6 +8,8 @@ class Settings(BaseSettings):
         enable_decoding="utf-8",
     )
 
+    database_url: str
+    
     secret_key: SecretStr
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
