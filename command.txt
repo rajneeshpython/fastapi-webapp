@@ -15,3 +15,15 @@ uv run alembic current
 
 # Show complete migration history
 uv run alembic history
+
+# Run user API tests
+uv run pytest .\tests\test_users.py -v
+
+# Run post API tests
+uv run pytest .\tests\test_posts.py -v
+
+# Run all tests
+uv run pytest .\tests\ -v
+
+# Run a single test
+uv run pytest .\tests\test_posts.py::test_get_posts_empty -v
